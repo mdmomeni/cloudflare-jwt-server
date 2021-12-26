@@ -2,9 +2,11 @@ package main
 
 import (
 	"crypto/rsa"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/http"
 	"time"
 
@@ -24,9 +26,17 @@ var (
 	publicKey  *rsa.PublicKey
 )
 
-func tokenExpiration() time.Time{
-	// return time.Now().AddDate(0, 0, 1)
-	return time.Now().Add(time.Second * 40)
+type Stats struct {
+	Verify      []string `json:"/verify"`
+	Auth        []string `json:"/auth"`
+	DecodeTimes []int64  `json:"decode_times"`
+	EncodeTimes []int64  `json:"encode_times"`
+}
+
+// Returns the expiration time of the token
+func tokenExpiration() time.Time {
+	// 24 hours
+	return time.Now().AddDate(0, 0, 1)
 }
 
 func setPrivateKey() {
@@ -61,21 +71,56 @@ func setPublicKey() {
 	publicKey = pub
 }
 
-func createToken(username string) (string, error) {
-
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.StandardClaims{
-		Subject:   username,
-		ExpiresAt: tokenExpiration().Unix(),
-	})
-
-	return token.SignedString(privateKey)
-}
-
 // Since we only use the one private key to sign the tokens,
 // we also only use its public counter part to verify
 // [Resource](https://github.com/dgrijalva/jwt-go/blob/master/http_example_test.go#L107)
 func keyFunc(token *jwt.Token) (interface{}, error) {
 	return publicKey, nil
+}
+
+func createToken(username string) (string, error) {
+
+	t1 := time.Now()
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.StandardClaims{
+		Subject:   username,
+		ExpiresAt: tokenExpiration().Unix(),
+	})
+	signedString, err := token.SignedString(privateKey)
+
+	addTimeRecord("encode", time.Since(t1))
+	addUserRecord(username, "/auth")
+
+	return signedString, err
+}
+
+// Edits the `stats.json` and add the information
+func addUserRecord(username string, path string) {
+	content, err := ioutil.ReadFile("stats.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+	var stats Stats
+	unMarshalErr := json.Unmarshal(content, &stats)
+	if unMarshalErr != nil {
+		log.Fatal(unMarshalErr.Error())
+	}
+
+	if path == "/verify" {
+		stats.Verify = append(stats.Verify, username)
+	}
+	if path == "/auth" {
+		stats.Auth = append(stats.Auth, username)
+	}
+
+	bytes, marshalErr := json.Marshal(stats)
+	if marshalErr != nil {
+		log.Fatal(marshalErr.Error())
+	}
+	writeErr := ioutil.WriteFile("stats.json", bytes, 0644)
+	if writeErr != nil {
+		log.Fatal(err.Error())
+	}
 }
 
 // This endpoint recieve a cookie from user (client)
@@ -84,16 +129,23 @@ func keyFunc(token *jwt.Token) (interface{}, error) {
 func verify(res http.ResponseWriter, r *http.Request) {
 
 	// Get `token` cookie in the headers
-	var jwtStringInCookie string
+	var (
+		jwtStringInCookie string
+		username          string
+	)
+
+	// Get the username and generated JWT from the cookies
 	requestCookies := r.Cookies()
 	for _, cookie := range requestCookies {
+
 		if cookie.Name == cookieKey {
 			jwtStringInCookie = cookie.Value
 		}
-	}
 
-	// Get username to verify somehow!
-	username := r.Header.Get("x-username")
+		if cookie.Name == "username" {
+			username = cookie.Value
+		}
+	}
 
 	if jwtStringInCookie == "" {
 		res.WriteHeader(http.StatusBadRequest)
@@ -106,10 +158,15 @@ func verify(res http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	addUserRecord(username, "/verify")
+
 	claims := jwt.StandardClaims{
 		Subject: username,
 	}
+
+	t1 := time.Now()
 	token, err := jwt.ParseWithClaims(jwtStringInCookie, &claims, keyFunc)
+	addTimeRecord("decode", time.Since(t1))
 
 	if err != nil {
 		v, _ := err.(*jwt.ValidationError)
@@ -145,7 +202,7 @@ func verify(res http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res.Write([]byte(username + " " + time.Unix(tokenClaim.ExpiresAt, 0).String()))
+	res.Write([]byte(username))
 }
 
 // This endpoint creates a JWT and sends it back to the user as a cookie.
@@ -160,11 +217,95 @@ func authHandler(res http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cookie := http.Cookie{Name: cookieKey, Value: jwtCookie}
-	http.SetCookie(res, &cookie)
+	// Setting cookie path to `/` leads to access it from -
+	// all the server routes
+	tokenCookie := http.Cookie{Name: cookieKey, Value: jwtCookie, Path: "/"}
+	userCookie := http.Cookie{Name: "username", Value: username, Path: "/verify"}
+	http.SetCookie(res, &tokenCookie)
+	http.SetCookie(res, &userCookie)
 
 	pub := "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2j3jHc7292PvBK9YafZfIB5cD2Ke+VUSfGWsP/zff0gkN6iqLt1VYziNxzSQnE7X1viunKUAEosfUokn9tRSSVcpwt+O+y/in3nNapjX0UA5f/dwlsJss3mRkrJF35JkFwJ6yDKRiFxdf4QXUjWYNlusUE9Im4heHx19TIXUoRqMZHrnudTntO0Ne3NhWfdcdOndes110PR28yUiH88r0Qmntix7GUC+oN3WiHPRIlv17znch7UqNedWThpxBWDufsgJa5CxzTRT27WQ5r+3vASDbcg4UMpIxYeAuzkIx2xEdp43fw5/BGbctjs9lMmpavCHgevZFAXhSmCcii0u9QIDAQAB"
 	res.Write([]byte(pub))
+}
+
+func addTimeRecord(mode string, time time.Duration) {
+	ms := time.Milliseconds()
+
+	content, err := ioutil.ReadFile("stats.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+	var stats Stats
+	unMarshalErr := json.Unmarshal(content, &stats)
+	if unMarshalErr != nil {
+		log.Fatal(unMarshalErr.Error())
+	}
+
+	if mode == "encode" {
+		stats.EncodeTimes = append(stats.EncodeTimes, ms)
+	}
+	if mode == "decode" {
+		stats.DecodeTimes = append(stats.DecodeTimes, ms)
+	}
+
+	bytes, marshalErr := json.Marshal(stats)
+	if marshalErr != nil {
+		log.Fatal(marshalErr.Error())
+	}
+	writeErr := ioutil.WriteFile("stats.json", bytes, 0644)
+	if writeErr != nil {
+		log.Fatal(err.Error())
+	}
+}
+
+func occuranceDict(arr []string) map[string]int {
+	dict := make(map[string]int)
+	for _, num := range arr {
+		dict[num] = dict[num] + 1
+	}
+	return dict
+}
+
+// Returns the avrage value of an array of `floats`
+func arrayMean(arr []int64) float64 {
+	n := 4
+	sum := 0
+	for _, n := range arr {
+		sum += int(n)
+	}
+	mean := (float64(sum)) / (float64(n))
+	return math.Round((mean * 1000) / 1000)
+}
+
+func statsSorter(stats Stats) ([]byte, error) {
+	dict := make(map[string]interface{})
+	dict["auth"] = occuranceDict(stats.Auth)
+	dict["verify"] = occuranceDict(stats.Verify)
+	dict["avg_encode_time_ms"] = arrayMean(stats.EncodeTimes)
+	dict["avg_decode_time_ms"] = arrayMean(stats.DecodeTimes)
+	return json.Marshal(dict)
+}
+
+func statsHandler(res http.ResponseWriter, r *http.Request) {
+	text, err := ioutil.ReadFile("stats.json")
+	if err != nil {
+		res.WriteHeader(http.StatusInternalServerError)
+		res.Write([]byte(err.Error()))
+	}
+	res.Header().Add("Content-Type", "application/json")
+	var stats Stats
+	json.Unmarshal(text, &stats)
+	result, _ := statsSorter(stats)
+	res.Write(result)
+}
+
+func sendReadMe(res http.ResponseWriter, r *http.Request) {
+	text, err := ioutil.ReadFile("README.md")
+	if err != nil {
+		res.WriteHeader(http.StatusInternalServerError)
+		res.Write([]byte(err.Error()))
+	}
+	res.Write([]byte(text))
 }
 
 func setPrivateAndPublicKeys() {
@@ -174,13 +315,14 @@ func setPrivateAndPublicKeys() {
 
 func main() {
 
-	// Initilize the RSA keys once
 	setPrivateAndPublicKeys()
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Get("/verify", verify)
 	r.Get("/auth/{username}", authHandler)
+	r.Get("/stats", statsHandler)
+	r.Get("/README.txt", sendReadMe)
 
 	http.ListenAndServe(":8080", r)
 }
