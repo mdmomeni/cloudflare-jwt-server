@@ -1,2 +1,2 @@
 # cloudflare-jwt-server-go
-welcome
+JWT server implementation of Cloudflare 2022 internship (social media) entrance assignment
