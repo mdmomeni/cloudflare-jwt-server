@@ -224,7 +224,7 @@ func authHandler(res http.ResponseWriter, r *http.Request) {
 	http.SetCookie(res, &tokenCookie)
 	http.SetCookie(res, &userCookie)
 
-	pub := "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2j3jHc7292PvBK9YafZfIB5cD2Ke+VUSfGWsP/zff0gkN6iqLt1VYziNxzSQnE7X1viunKUAEosfUokn9tRSSVcpwt+O+y/in3nNapjX0UA5f/dwlsJss3mRkrJF35JkFwJ6yDKRiFxdf4QXUjWYNlusUE9Im4heHx19TIXUoRqMZHrnudTntO0Ne3NhWfdcdOndes110PR28yUiH88r0Qmntix7GUC+oN3WiHPRIlv17znch7UqNedWThpxBWDufsgJa5CxzTRT27WQ5r+3vASDbcg4UMpIxYeAuzkIx2xEdp43fw5/BGbctjs9lMmpavCHgevZFAXhSmCcii0u9QIDAQAB"
+	pub := ""
 	res.Write([]byte(pub))
 }
 
